@@ -5,7 +5,7 @@
   Board   : ESP32-S3 (terpasang di kendaraan)
   Sensor  : 3x Ultrasonik HC-SR04 (kiri, tengah, kanan)
             3x Penerima Inframerah KY-022 (kiri, tengah, kanan)
-  Aktuator: 2x Motor DC via Motor Driver (TB6612FNG / L298N)
+  Aktuator: 2x Motor DC via Motor Driver L298N
   Fitur   : Dashboard real-time via WiFi (Server-Sent Events),
             bisa dibuka lewat browser HP/laptop di jaringan
             WiFi yang sama.
@@ -55,14 +55,17 @@ const char* WIFI_PASSWORD = "PASSWORD_WIFI_ANDA";
 #define IR_TENGAH 2
 #define IR_KANAN  42
 
-// --- Motor Driver (contoh: TB6612FNG) ---
-#define AIN1 17   // Arah motor kiri
-#define AIN2 18
-#define PWMA 8    // Kecepatan motor kiri
-#define BIN1 9    // Arah motor kanan
-#define BIN2 10
-#define PWMB 11   // Kecepatan motor kanan
-#define STBY 12   // Standby / enable driver
+// --- Motor Driver L298N ---
+#define IN1 17   // Arah motor kiri
+#define IN2 18
+#define ENA 8    // Kecepatan (PWM) motor kiri
+#define IN3 9    // Arah motor kanan
+#define IN4 10
+#define ENB 11   // Kecepatan (PWM) motor kanan
+// Catatan: L298N tidak punya pin STBY seperti TB6612FNG.
+// Modul L298N biasanya punya jumper "ENA"/"ENB" bawaan - pastikan
+// jumper itu DILEPAS kalau kamu mau kontrol kecepatan lewat PWM
+// dari ESP32-S3 (kalau jumper terpasang, motor selalu full speed).
 
 // ============================================================
 // 3. PARAMETER NAVIGASI (bisa kamu tuning nanti)
@@ -169,15 +172,17 @@ void setMotor(int in1, int in2, int pwmPin, int kecepatan) {
 }
 
 void gerakMotor(int kiri, int kanan) {
-  digitalWrite(STBY, HIGH);
-  setMotor(AIN1, AIN2, PWMA, kiri);
-  setMotor(BIN1, BIN2, PWMB, kanan);
+  setMotor(IN1, IN2, ENA, kiri);
+  setMotor(IN3, IN4, ENB, kanan);
 }
 
 void berhentiMotor() {
-  digitalWrite(STBY, LOW);
-  analogWrite(PWMA, 0);
-  analogWrite(PWMB, 0);
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, LOW);
+  digitalWrite(IN3, LOW);
+  digitalWrite(IN4, LOW);
+  analogWrite(ENA, 0);
+  analogWrite(ENB, 0);
 }
 
 // ============================================================
@@ -383,10 +388,9 @@ void setup() {
   attachInterrupt(digitalPinToInterrupt(IR_TENGAH), isrTengah, FALLING);
   attachInterrupt(digitalPinToInterrupt(IR_KANAN),  isrKanan,  FALLING);
 
-  // --- Motor Driver ---
-  pinMode(AIN1, OUTPUT); pinMode(AIN2, OUTPUT); pinMode(PWMA, OUTPUT);
-  pinMode(BIN1, OUTPUT); pinMode(BIN2, OUTPUT); pinMode(PWMB, OUTPUT);
-  pinMode(STBY, OUTPUT);
+  // --- Motor Driver L298N ---
+  pinMode(IN1, OUTPUT); pinMode(IN2, OUTPUT); pinMode(ENA, OUTPUT);
+  pinMode(IN3, OUTPUT); pinMode(IN4, OUTPUT); pinMode(ENB, OUTPUT);
   berhentiMotor();
 
   // --- WiFi ---
