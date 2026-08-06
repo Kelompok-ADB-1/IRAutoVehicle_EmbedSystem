@@ -222,7 +222,7 @@ const char HALAMAN_HTML[] PROGMEM = R"rawliteral(
 </div>
 
 <div>
-  <button onclick="mulaiRekam()">Start Recording</button>
+  <button id="rekamBtn" onclick="mulaiRekam()">Start Recording</button>
   <button onclick="unduhCSV()">Download CSV</button>
 </div>
 
@@ -254,9 +254,10 @@ const chart = new Chart(ctx, {
 });
 
 function mulaiRekam() {
-  rekamAktif = true;
-  dataRekaman = [];
-  alert('Rekaman dimulai. Klik "Download CSV" kapan saja untuk mengunduh data yang sudah terkumpul.');
+  rekamAktif = !rekamAktif;
+
+  const btn = document.getElementById("rekamBtn");
+  btn.textContent = rekamAktif ? "Stop Record" : "Start Recording";
 }
 
 function unduhCSV() {
@@ -394,7 +395,7 @@ void setup() {
   berhentiMotor();
 
   // --- WiFi ---
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);  // GANTI INI !!!
   Serial.print("Menghubungkan ke WiFi");
   while (WiFi.status() != WL_CONNECTED) {
     delay(300);

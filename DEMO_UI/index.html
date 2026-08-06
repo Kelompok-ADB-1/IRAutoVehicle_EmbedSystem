@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dashboard Kendaraan Otomatis</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+  body { font-family: Arial, sans-serif; background:#111; color:#eee; margin:0; padding:16px; }
+  h2 { margin-top:0; }
+  .status-row { display:flex; gap:12px; margin-bottom:16px; flex-wrap:wrap; }
+  .card { background:#1e1e1e; border-radius:8px; padding:10px 16px; min-width:110px; }
+  .card b { display:block; font-size:1.3em; margin-top:4px; }
+  #chart-container { background:#1e1e1e; border-radius:8px; padding:12px; }
+  button { background:#2ecc71; border:none; padding:8px 14px; border-radius:6px;
+           color:#000; font-weight:bold; cursor:pointer; margin-right:8px; margin-bottom:12px; }
+  #statusKoneksi { font-size:0.85em; color:#888; margin-bottom:12px; }
+</style>
+</head>
+<body>
+<h2>Dashboard Kendaraan Otomatis (Real-time)</h2>
+<div id="statusKoneksi">Menghubungkan ke kendaraan...</div>
+
+<div class="status-row">
+  <div class="card">Mode Sistem<b id="modeVal">-</b></div>
+  <div class="card">Arah Sektor<b id="arahVal">-</b></div>
+  <div class="card">Jarak Kiri (cm)<b id="ukVal">-</b></div>
+  <div class="card">Jarak Tengah (cm)<b id="utVal">-</b></div>
+  <div class="card">Jarak Kanan (cm)<b id="ukaVal">-</b></div>
+  <div class="card">PWM Kiri / Kanan<b id="pwmVal">-</b></div>
+</div>
+
+<div>
+  <button id="rekamBtn" onclick="mulaiRekam()">Start Recording</button>
+  <button onclick="unduhCSV()">Download CSV</button>
+</div>
+
+<div id="chart-container">
+  <canvas id="grafik" height="90"></canvas>
+</div>
+
+<script>
+const MAKS_TITIK = 50;
+let labelWaktu = [], dataKiri = [], dataTengah = [], dataKanan = [];
+let rekamAktif = false;
+let dataRekaman = [];
+
+const ctx = document.getElementById('grafik').getContext('2d');
+const chart = new Chart(ctx, {
+  type: 'line',
+  data: {
+    labels: labelWaktu,
+    datasets: [
+      { label: 'Kiri (cm)',   data: dataKiri,   borderColor: '#e74c3c', tension: 0.3 },
+      { label: 'Tengah (cm)', data: dataTengah, borderColor: '#2ecc71', tension: 0.3 },
+      { label: 'Kanan (cm)',  data: dataKanan,  borderColor: '#3498db', tension: 0.3 }
+    ]
+  },
+  options: {
+    animation: false,
+    scales: { y: { title: { display: true, text: 'Jarak (cm)' }, suggestedMax: 100 } }
+  }
+});
+
+function mulaiRekam() {
+  rekamAktif = !rekamAktif;
+
+  const btn = document.getElementById("rekamBtn");
+  btn.textContent = rekamAktif ? "Stop Record" : "Start Recording";
+}
+
+function unduhCSV() {
+  if (dataRekaman.length === 0) {
+    alert('Belum ada data yang direkam. Klik "Start Recording" dulu.');
+    return;
+  }
+  const header = Object.keys(dataRekaman[0]).join(',');
+  const baris = dataRekaman.map(d => Object.values(d).join(','));
+  const csv = header + '\n' + baris.join('\n');
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'log_kendaraan.csv';
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+const sumber = new EventSource('/events');
+
+sumber.onopen = function() {
+  document.getElementById('statusKoneksi').innerText = 'Terhubung ke kendaraan.';
+};
+
+sumber.onerror = function() {
+  document.getElementById('statusKoneksi').innerText = 'Koneksi terputus, mencoba menyambung ulang...';
+};
+
+sumber.onmessage = function(event) {
+  const d = JSON.parse(event.data);
+
+  document.getElementById('modeVal').innerText  = d.mode_sistem;
+  document.getElementById('arahVal').innerText   = d.arah_sektor;
+  document.getElementById('ukVal').innerText     = d.us_kiri;
+  document.getElementById('utVal').innerText     = d.us_tengah;
+  document.getElementById('ukaVal').innerText    = d.us_kanan;
+  document.getElementById('pwmVal').innerText    = d.pwm_kiri + ' / ' + d.pwm_kanan;
+
+  labelWaktu.push('');
+  dataKiri.push(d.us_kiri);
+  dataTengah.push(d.us_tengah);
+  dataKanan.push(d.us_kanan);
+  if (labelWaktu.length > MAKS_TITIK) {
+    labelWaktu.shift(); dataKiri.shift(); dataTengah.shift(); dataKanan.shift();
+  }
+  chart.update();
+
+  if (rekamAktif) dataRekaman.push(d);
+};
+</script>
+</body>
+</html>
+

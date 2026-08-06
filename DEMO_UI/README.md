@@ -1,0 +1,10 @@
+INI ADALAH DEMO TEST DATA DASHBOARD - DATA YANG DISEDIAKAN ADALAH PALSU.
+
+cara run
+
+```
+cd DEMO_UI
+
+python server.py
+```
+
