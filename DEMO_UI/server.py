@@ -44,9 +44,10 @@ class Handler(BaseHTTPRequestHandler):
                             "BERHENTI"
                         ]),
                         "arah_sektor": random.choice([
-                            "LEFT",
-                            "CENTER",
-                            "RIGHT"
+                            "KIRI",
+                            "TENGAH",
+                            "KANAN",
+                            "HILANG"
                         ]),
                         "us_kiri": round(40 + 20 * math.sin(t)),
                         "us_tengah": round(50 + 15 * math.sin(t + 1)),
