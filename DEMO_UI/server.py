@@ -37,9 +37,11 @@ class Handler(BaseHTTPRequestHandler):
 
                     data = {
                         "mode_sistem": random.choice([
-                            "AUTO",
-                            "MANUAL",
-                            "STOP"
+                            "MENGIKUTI",
+                            "MENGHINDAR",
+                            "MUNDUR",
+                            "MENCARI",
+                            "BERHENTI"
                         ]),
                         "arah_sektor": random.choice([
                             "LEFT",
