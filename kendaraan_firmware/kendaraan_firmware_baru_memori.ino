@@ -20,8 +20,12 @@
      yang nyambung ke WiFi yang sama untuk lihat dashboard.
 
   --- CATATAN PENTING ---
-  - Kode ini TIDAK memerlukan library tambahan (semua library
-    yang dipakai sudah bawaan Arduino core ESP32).
+  - File ini butuh 1 file tambahan di folder sketch yang sama:
+    "dashboard_html.h" - JANGAN dihapus/dipindah, karena isi
+    dashboard web (HTML/JS) sengaja dipisah ke situ supaya
+    proses auto-prototype Arduino IDE tidak salah baca kode
+    JavaScript di dalamnya sebagai kode C++ (lihat catatan di
+    dashboard_html.h untuk detail kenapa).
   - Kalau "analogWrite()" gagal compile di board kamu (tergantung
     versi Arduino core ESP32 yang terinstall), ganti fungsi
     setMotor() di bawah untuk pakai ledcAttach()/ledcWrite()
@@ -31,37 +35,48 @@
 
 #include <WiFi.h>
 #include <WebServer.h>
+#include <ESPmDNS.h>
+#include <LittleFS.h>
+#include "dashboard_html.h"   // isi halaman dashboard (HTML+JS) - lihat file terpisah
 
 // ============================================================
 // 1. PENGATURAN WIFI (WAJIB DIISI)
 // ============================================================
-const char* WIFI_SSID     = "NAMA_WIFI_ANDA";
-const char* WIFI_PASSWORD = "PASSWORD_WIFI_ANDA";
+const char* WIFI_SSID     = "RG-AP720-L";
+const char* WIFI_PASSWORD = "Ap1234321";
+
+// --- Nama mDNS (supaya dashboard SELALU bisa dibuka lewat nama
+//     ini, tanpa perlu tau/tebak gateway atau IP dari router.
+//     Berguna pas kendaraan jalan pakai baterai tanpa USB,
+//     karena Serial Monitor jadi nggak bisa dibuka buat lihat
+//     IP yang dikasih router). ---
+// Buka di browser: http://kendaraan.local
+const char* MDNS_HOSTNAME = "kendaraan";
 
 // ============================================================
 // 2. PENGATURAN PIN
 // ============================================================
 
 // --- Sensor Ultrasonik HC-SR04 ---
-#define TRIG_KIRI   4
-#define ECHO_KIRI   5
-#define TRIG_TENGAH 6
-#define ECHO_TENGAH 7
-#define TRIG_KANAN  15
-#define ECHO_KANAN  16
+#define TRIG_KIRI   7
+#define ECHO_KIRI   15
+#define TRIG_TENGAH 16
+#define ECHO_TENGAH 17
+#define TRIG_KANAN  18
+#define ECHO_KANAN  8
 
 // --- Penerima Inframerah KY-022 (output digital) ---
-#define IR_KIRI   1
-#define IR_TENGAH 2
-#define IR_KANAN  42
+#define IR_KIRI   4
+#define IR_TENGAH 5
+#define IR_KANAN  6
 
 // --- Motor Driver L298N ---
-#define IN1 17   // Arah motor kiri
-#define IN2 18
-#define ENA 8    // Kecepatan (PWM) motor kiri
-#define IN3 9    // Arah motor kanan
-#define IN4 10
-#define ENB 11   // Kecepatan (PWM) motor kanan
+#define IN1 46   // Arah motor kiri
+#define IN2 9
+#define ENA 12    // Kecepatan (PWM) motor kiri
+#define IN3 10    // Arah motor kanan
+#define IN4 11
+#define ENB 13   // Kecepatan (PWM) motor kanan
 // Catatan: L298N tidak punya pin STBY seperti TB6612FNG.
 // Modul L298N biasanya punya jumper "ENA"/"ENB" bawaan - pastikan
 // jumper itu DILEPAS kalau kamu mau kontrol kecepatan lewat PWM
@@ -88,6 +103,7 @@ enum ModeSistem { MENGIKUTI, MENGHINDAR, MUNDUR, MENCARI, BERHENTI };
 
 WebServer server(80);
 WiFiClient sseClient;
+bool wifiTersambung = false; // status WiFi - dicek juga di loop() supaya server.handleClient() cuma dipanggil kalau WiFi memang nyambung
 
 // --- Waktu pulsa IR terakhir terdeteksi (diupdate lewat interrupt) ---
 volatile unsigned long lastPulseKiri   = 0;
@@ -186,211 +202,7 @@ void berhentiMotor() {
 }
 
 // ============================================================
-// 8. HALAMAN WEB DASHBOARD (HTML + JS, tersimpan di flash)
-// ============================================================
-const char HALAMAN_HTML[] PROGMEM = R"rawliteral(
-<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Dashboard Kendaraan Otomatis</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-<style>
-  body { font-family: Arial, sans-serif; background:#111; color:#eee; margin:0; padding:16px; }
-  h2 { margin-top:0; }
-  .status-row { display:flex; gap:12px; margin-bottom:16px; flex-wrap:wrap; }
-  .card { background:#1e1e1e; border-radius:8px; padding:10px 16px; min-width:110px; }
-  .card b { display:block; font-size:1.3em; margin-top:4px; }
-  .chart-box { background:#1e1e1e; border-radius:8px; padding:12px; margin-bottom:14px; }
-  .chart-box h4 { margin:0 0 8px 0; font-weight:normal; color:#aaa; }
-  button { background:#2ecc71; border:none; padding:8px 14px; border-radius:6px;
-           color:#000; font-weight:bold; cursor:pointer; margin-right:8px; margin-bottom:12px; }
-  button#btnRekam.aktif { background:#e74c3c; color:#fff; }
-  #statusKoneksi { font-size:0.85em; color:#888; margin-bottom:12px; }
-  #recIndicator { font-size:0.9em; margin-left:4px; }
-  #recIndicator.aktif { color:#e74c3c; animation: kedip 1s infinite; }
-  #recIndicator.mati { color:#666; }
-  @keyframes kedip { 0%,100%{opacity:1;} 50%{opacity:0.25;} }
-</style>
-</head>
-<body>
-<h2>Dashboard Kendaraan Otomatis (Real-time)</h2>
-<div id="statusKoneksi">Menghubungkan ke kendaraan...</div>
-
-<div class="status-row">
-  <div class="card">Mode Sistem<b id="modeVal">-</b></div>
-  <div class="card">Arah Sektor<b id="arahVal">-</b></div>
-  <div class="card">Jarak Kiri (cm)<b id="ukVal">-</b></div>
-  <div class="card">Jarak Tengah (cm)<b id="utVal">-</b></div>
-  <div class="card">Jarak Kanan (cm)<b id="ukaVal">-</b></div>
-  <div class="card">PWM Kiri / Kanan<b id="pwmVal">-</b></div>
-</div>
-
-<div>
-  <button id="btnRekam" onclick="toggleRekam()">Start Recording</button>
-  <button onclick="unduhCSV()">Download CSV</button>
-  <span id="recIndicator" class="mati">Tidak merekam</span>
-</div>
-
-<div class="chart-box">
-  <h4>Jarak Ultrasonik (cm)</h4>
-  <canvas id="grafikUS" height="80"></canvas>
-</div>
-
-<div class="chart-box">
-  <h4>Arah Sektor Inframerah</h4>
-  <canvas id="grafikIR" height="60"></canvas>
-</div>
-
-<div class="chart-box">
-  <h4>PWM Motor Kiri / Kanan</h4>
-  <canvas id="grafikPWM" height="70"></canvas>
-</div>
-
-<script>
-// Batas jumlah titik yang disimpan di tiap grafik, biar memori
-// browser & ESP32 tetap ringan (data lama otomatis dibuang).
-const MAKS_TITIK = 50;
-
-let labelWaktu = [];
-let dataKiri = [], dataTengah = [], dataKanan = [];
-let dataIR = [];
-let dataPwmKiri = [], dataPwmKanan = [];
-
-let rekamAktif = false;
-let dataRekaman = [];
-
-// Encode arah sektor jadi angka supaya bisa digambar sebagai grafik
-// step: KIRI=-1, TENGAH=0, KANAN=1, HILANG=null (celah kosong di grafik)
-function encodeArah(arah) {
-  if (arah === 'KIRI') return -1;
-  if (arah === 'TENGAH') return 0;
-  if (arah === 'KANAN') return 1;
-  return null; // HILANG -> celah, bukan digambar 0
-}
-
-const optDasar = { animation: false, elements: { point: { radius: 0 } } };
-
-const chartUS = new Chart(document.getElementById('grafikUS').getContext('2d'), {
-  type: 'line',
-  data: { labels: labelWaktu, datasets: [
-    { label: 'Kiri',   data: dataKiri,   borderColor: '#e74c3c', tension: 0.3 },
-    { label: 'Tengah', data: dataTengah, borderColor: '#2ecc71', tension: 0.3 },
-    { label: 'Kanan',  data: dataKanan,  borderColor: '#3498db', tension: 0.3 }
-  ]},
-  options: { ...optDasar, scales: { y: { suggestedMax: 100, title: { display:true, text:'cm' } } } }
-});
-
-const chartIR = new Chart(document.getElementById('grafikIR').getContext('2d'), {
-  type: 'line',
-  data: { labels: labelWaktu, datasets: [
-    { label: 'Arah', data: dataIR, borderColor: '#f39c12', stepped: true, spanGaps: false }
-  ]},
-  options: { ...optDasar, scales: { y: {
-    min: -1.5, max: 1.5, ticks: {
-      stepSize: 1,
-      callback: v => ({ '-1':'KIRI', '0':'TENGAH', '1':'KANAN' }[v] ?? '')
-    }
-  }}}
-});
-
-const chartPWM = new Chart(document.getElementById('grafikPWM').getContext('2d'), {
-  type: 'line',
-  data: { labels: labelWaktu, datasets: [
-    { label: 'PWM Kiri',  data: dataPwmKiri,  borderColor: '#9b59b6', tension: 0.3 },
-    { label: 'PWM Kanan', data: dataPwmKanan, borderColor: '#1abc9c', tension: 0.3 }
-  ]},
-  options: { ...optDasar, scales: { y: { suggestedMin: -255, suggestedMax: 255 } } }
-});
-
-function toggleRekam() {
-  rekamAktif = !rekamAktif;
-  const tombol = document.getElementById('btnRekam');
-  const indikator = document.getElementById('recIndicator');
-
-  if (rekamAktif) {
-    dataRekaman = [];
-    tombol.innerText = 'Stop Recording';
-    tombol.classList.add('aktif');
-    indikator.innerText = 'Merekam...';
-    indikator.className = 'aktif';
-  } else {
-    tombol.innerText = 'Start Recording';
-    tombol.classList.remove('aktif');
-    indikator.innerText = dataRekaman.length + ' data siap diunduh';
-    indikator.className = 'mati';
-  }
-}
-
-function unduhCSV() {
-  if (dataRekaman.length === 0) {
-    alert('Belum ada data yang direkam. Klik "Start Recording" dulu.');
-    return;
-  }
-  const header = Object.keys(dataRekaman[0]).join(',');
-  const baris = dataRekaman.map(d => Object.values(d).join(','));
-  const csv = header + '\n' + baris.join('\n');
-  const blob = new Blob([csv], { type: 'text/csv' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = 'log_kendaraan.csv';
-  a.click();
-  URL.revokeObjectURL(url);
-}
-
-const sumber = new EventSource('/events');
-
-sumber.onopen = function() {
-  document.getElementById('statusKoneksi').innerText = 'Terhubung ke kendaraan.';
-};
-
-sumber.onerror = function() {
-  document.getElementById('statusKoneksi').innerText = 'Koneksi terputus, mencoba menyambung ulang...';
-};
-
-sumber.onmessage = function(event) {
-  const d = JSON.parse(event.data);
-
-  document.getElementById('modeVal').innerText = d.mode_sistem;
-  document.getElementById('arahVal').innerText  = d.arah_sektor;
-  document.getElementById('ukVal').innerText    = d.us_kiri;
-  document.getElementById('utVal').innerText    = d.us_tengah;
-  document.getElementById('ukaVal').innerText   = d.us_kanan;
-  document.getElementById('pwmVal').innerText   = d.pwm_kiri + ' / ' + d.pwm_kanan;
-
-  labelWaktu.push('');
-  dataKiri.push(d.us_kiri);
-  dataTengah.push(d.us_tengah);
-  dataKanan.push(d.us_kanan);
-  dataIR.push(encodeArah(d.arah_sektor));
-  dataPwmKiri.push(d.pwm_kiri);
-  dataPwmKanan.push(d.pwm_kanan);
-
-  if (labelWaktu.length > MAKS_TITIK) {
-    labelWaktu.shift();
-    dataKiri.shift(); dataTengah.shift(); dataKanan.shift();
-    dataIR.shift();
-    dataPwmKiri.shift(); dataPwmKanan.shift();
-  }
-
-  chartUS.update();
-  chartIR.update();
-  chartPWM.update();
-
-  if (rekamAktif) {
-    dataRekaman.push(d);
-    document.getElementById('recIndicator').innerText = 'Merekam... (' + dataRekaman.length + ' data)';
-  }
-};
-</script>
-</body>
-</html>
-)rawliteral";
-
-// ============================================================
-// 9. HANDLER WEB SERVER
+// 8. HANDLER WEB SERVER
 // ============================================================
 void handleRoot() {
   server.send(200, "text/html", HALAMAN_HTML);
@@ -446,7 +258,79 @@ void kirimDataSSE(unsigned long ts, float uk, float ut, float ukn,
 }
 
 // ============================================================
-// 10. SETUP
+// 8b. LOGGING KE FLASH INTERNAL (LittleFS) - TIDAK BUTUH WIFI
+// ============================================================
+// Ini jalur penyimpanan data CADANGAN yang selalu aktif, terlepas
+// dari WiFi/dashboard nyambung atau tidak. Cocok dipakai pas
+// kendaraan jalan pakai baterai tanpa terhubung ke PC/WiFi.
+//
+// CATATAN PENTING SEBELUM UPLOAD:
+// Fitur ini butuh partition scheme yang menyediakan ruang
+// LittleFS/SPIFFS. Di Arduino IDE: Tools > Partition Scheme >
+// pilih salah satu yang ada kata "spiffs" di namanya (misal
+// "Default 4MB with spiffs"). Kalau partition scheme yang
+// kepilih nggak punya spiffs, LittleFS.begin() akan gagal terus
+// (akan muncul pesan error di Serial Monitor).
+const char* LOG_PATH = "/log.csv";
+bool littleFsSiap = false;
+
+void tulisHeaderLogJikaBelumAda() {
+  if (!LittleFS.exists(LOG_PATH)) {
+    File f = LittleFS.open(LOG_PATH, "w");
+    if (f) {
+      f.println("timestamp,us_kiri,us_tengah,us_kanan,arah_sektor,mode_sistem,pwm_kiri,pwm_kanan");
+      f.close();
+    }
+  }
+}
+
+void catatBarisLog(unsigned long ts, float uk, float ut, float ukn,
+                    ArahSektor arah, ModeSistem mode, int pwmK, int pwmKa) {
+  if (!littleFsSiap) return;
+
+  File f = LittleFS.open(LOG_PATH, "a");
+  if (!f) return;
+
+  f.print(ts);           f.print(',');
+  f.print(uk, 1);        f.print(',');
+  f.print(ut, 1);        f.print(',');
+  f.print(ukn, 1);       f.print(',');
+  f.print(namaArah(arah)); f.print(',');
+  f.print(namaMode(mode)); f.print(',');
+  f.print(pwmK);          f.print(',');
+  f.println(pwmKa);
+  f.close(); // close() otomatis flush ke flash - lebih lambat tapi lebih aman
+             // kalau baterai tiba-tiba habis di tengah pengujian
+}
+
+// Ketik "dump" di Serial Monitor untuk menampilkan seluruh isi
+// log (tinggal copy-paste ke file .csv di laptop kamu), atau
+// ketik "clear" untuk menghapus log dan mulai sesi baru.
+void cekPerintahSerial() {
+  if (!Serial.available()) return;
+
+  String perintah = Serial.readStringUntil('\n');
+  perintah.trim();
+
+  if (perintah == "dump") {
+    File f = LittleFS.open(LOG_PATH, "r");
+    if (!f) {
+      Serial.println("Belum ada file log.");
+      return;
+    }
+    Serial.println("===== MULAI LOG (copy semua baris di bawah) =====");
+    while (f.available()) Serial.write(f.read());
+    Serial.println("===== SELESAI LOG =====");
+    f.close();
+  } else if (perintah == "clear") {
+    LittleFS.remove(LOG_PATH);
+    tulisHeaderLogJikaBelumAda();
+    Serial.println("Log dihapus, mulai sesi baru.");
+  }
+}
+
+// ============================================================
+// 9. SETUP
 // ============================================================
 void setup() {
   Serial.begin(115200);
@@ -470,30 +354,64 @@ void setup() {
   pinMode(IN3, OUTPUT); pinMode(IN4, OUTPUT); pinMode(ENB, OUTPUT);
   berhentiMotor();
 
-  // --- WiFi ---
+  // --- LittleFS: penyimpanan data cadangan, TIDAK BUTUH WIFI ---
+  littleFsSiap = LittleFS.begin(true); // true = auto-format kalau gagal mount
+  if (littleFsSiap) {
+    tulisHeaderLogJikaBelumAda();
+    Serial.println("LittleFS siap. Data sensor akan dicatat ke flash internal.");
+    Serial.println("Ketik 'dump' di Serial Monitor untuk lihat log, 'clear' untuk hapus.");
+  } else {
+    Serial.println("PERINGATAN: LittleFS gagal di-mount. Cek Partition Scheme di Tools > Partition Scheme (pilih yang ada 'spiffs'-nya). Logging ke flash TIDAK aktif.");
+  }
+
+  // --- WiFi (OPSIONAL - robot tetap jalan walau ini gagal) ---
+  // Dikasih batas waktu 8 detik supaya kalau WiFi gagal connect
+  // (misal karena masalah daya), robot TETAP lanjut bergerak dan
+  // TETAP mencatat data ke LittleFS - bukan diam menunggu selamanya.
+  WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  Serial.print("Menghubungkan ke WiFi");
-  while (WiFi.status() != WL_CONNECTED) {
+  Serial.print("Menghubungkan ke WiFi (maks 8 detik)");
+  unsigned long waktuMulaiWifi = millis();
+  while (millis() - waktuMulaiWifi < 8000) {
+    if (WiFi.status() == WL_CONNECTED) { wifiTersambung = true; break; }
     delay(300);
     Serial.print(".");
   }
   Serial.println();
-  Serial.print("Terhubung! Buka dashboard di browser lewat alamat: http://");
-  Serial.println(WiFi.localIP());
 
-  // --- Web Server ---
-  server.on("/", handleRoot);
-  server.on("/events", handleEvents);
-  server.begin();
+  if (wifiTersambung) {
+    Serial.print("Terhubung! IP dari router: ");
+    Serial.println(WiFi.localIP());
+
+    // --- mDNS: supaya dashboard bisa dibuka lewat nama tetap,
+    //     tanpa perlu tau IP dari router setiap kali. ---
+    if (MDNS.begin(MDNS_HOSTNAME)) {
+      Serial.print("mDNS aktif! Buka dashboard di: http://");
+      Serial.print(MDNS_HOSTNAME);
+      Serial.println(".local");
+      MDNS.addService("http", "tcp", 80);
+    } else {
+      Serial.println("PERINGATAN: mDNS gagal diaktifkan. Pakai IP dari router di atas sebagai gantinya.");
+    }
+
+    // --- Web Server ---
+    server.on("/", handleRoot);
+    server.on("/events", handleEvents);
+    server.begin();
+  } else {
+    Serial.println("WiFi tidak tersambung - lanjut TANPA dashboard.");
+    Serial.println("Data sensor tetap dicatat ke LittleFS (kalau berhasil di-mount di atas).");
+  }
 
   Serial.println("Sistem siap. Memulai navigasi...");
 }
 
 // ============================================================
-// 11. LOOP UTAMA
+// 10. LOOP UTAMA
 // ============================================================
 void loop() {
-  server.handleClient();
+  if (wifiTersambung) server.handleClient();
+  cekPerintahSerial(); // cek kalau ada perintah "dump" / "clear" dari Serial Monitor
 
   unsigned long now = millis();
   if (now - lastSiklus < INTERVAL_SIKLUS) return;
@@ -572,4 +490,5 @@ void loop() {
 
   // --- 4. Kirim data ke dashboard (kalau ada browser yang terhubung) ---
   kirimDataSSE(now, usKiri, usTengah, usKanan, arah, mode, pwmKiri, pwmKanan);
+  catatBarisLog(now, usKiri, usTengah, usKanan, arah, mode, pwmKiri, pwmKanan);
 }
